@@ -85,8 +85,14 @@ importScripts("ext/sjcl.js", "global.min.js");
       chrome.alarms.create(reconnectAlarm, { delayInMinutes: 1 }).catch(report);
     }
   };
-  Agent.connect = function () {
-    if (desktopPaused || this.c?.mv3Connecting || this.isConnected()) return;
+  Agent.connect = function (force = false) {
+    if (desktopPaused || this.c?.mv3Connecting) return;
+    if (this.isConnected()) {
+      if (!force) return;
+      // The authenticator calls connect(true) after clearing credentials.
+      // Close the old transport before Xc creates one with fresh auth state.
+      this.c.disconnect({});
+    }
     Xc(this).then(connection => {
       console.info("[1Password MV3] Connected to desktop app: " + connection);
     }, report);

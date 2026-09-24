@@ -11,8 +11,7 @@ below.
 
 ## 1. [P1] Forced reauthorization is blocked by the connection guard
 
-**Status:** Fixed. The user reported that the change seems to work after manual
-testing; the specific scenarios exercised were not recorded.
+**Status:** Fixed in commit [`bab9a61`](https://github.com/petejkim/1password-classic-chrome-extension/commit/bab9a6107f358c0ec3a7effd3e1b4ce4283c990b).
 
 **Location:** [`src/service-worker.js`](../src/service-worker.js), `Agent.connect`;
 legacy authentication callbacks in [`src/global.min.js`](../src/global.min.js).
@@ -48,7 +47,7 @@ filling recovers without reloading the extension.
 
 ## 2. [P2] Go & Fill bookmarks break in incognito
 
-**Status:** Fix implemented; browser verification pending.
+**Status:** Fixed in commit [`f56af8c`](https://github.com/petejkim/1password-classic-chrome-extension/commit/f56af8c7305516553f6b786e9540098249b3e72e).
 
 **Location:** [`src/go-and-fill-rules.json`](../src/go-and-fill-rules.json), redirect
 action; [`src/service-worker.js`](../src/service-worker.js), navigation handlers.
@@ -88,6 +87,8 @@ window and with additional query parameters and a fragment. Keep worker DevTools
 closed for a cold-start check.
 
 ## 3. [P2] The WebSocket fallback can lose its connection while idle
+
+**Status:** Open; no fix commit in the current history.
 
 **Location:** [`src/service-worker.js`](../src/service-worker.js), the
 `ConnectionDidEstablishConnection` listener;

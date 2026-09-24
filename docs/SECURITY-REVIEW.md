@@ -23,8 +23,7 @@ were made as part of the security review.
 
 ## 1. Pending Go & Fill requests can outlive their initiating navigation
 
-**Status:** Fix implemented; mocked regression checks pass. Browser verification
-is pending. Cross-domain password theft was not demonstrated in the review.
+**Status:** Fixed in commit [`eaf820e`](https://github.com/petejkim/1password-classic-chrome-extension/commit/eaf820e876fa1d81896161cb952b9c8570e453d9).
 
 **Locations:** [`src/service-worker.js`](../src/service-worker.js),
 `prepareBookmark`, `flushBookmarks`, `restoreState`, and the
@@ -93,8 +92,7 @@ redirecting login pages, cancellation, and worker restart before deployment.
 
 ## 2. Navigation metadata survives worker shutdown without guaranteed expiry
 
-**Status:** Fix implemented; mocked regression checks pass. Browser verification
-is pending. Website-readable disclosure was not demonstrated in the review.
+**Status:** Fixed in commit [`09bf73b`](https://github.com/petejkim/1password-classic-chrome-extension/commit/09bf73bfe5e8fe8d46ff09acc705f0bdf445a82e).
 
 **Locations:** [`src/service-worker.js`](../src/service-worker.js), `persist`,
 `restoreState`, and `flushBookmarks`.

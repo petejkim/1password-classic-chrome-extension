@@ -33,6 +33,11 @@ and desktop authorization still apply.
   navigation metadata. Pending navigation records expire after two minutes;
   password values and in-flight filling callbacks are not persisted. A worker
   restart reconnects and authenticates the desktop transport.
+- Go & Fill operations bind to the committed document. Abandoned navigations,
+  history/fragment changes, and expired operations are canceled. Pending state
+  can resume only when its committed document still matches. Credential messages
+  target the Chrome document that supplied the fields. Ambiguous redirect or
+  restarted navigation sequences cancel safely and may require a retry.
 - `go-and-fill-rules.json`: replaces the blocking webRequest redirect. GET
   navigations containing a nonempty `onepasswdfill` parameter redirect directly
   to the website with `onepasswdfill` and `onepasswdvault` removed. The worker

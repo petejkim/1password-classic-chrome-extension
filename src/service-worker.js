@@ -8,6 +8,8 @@ importScripts("ext/sjcl.js", "global.min.js");
   const pauseKey = "mv3.desktopPaused";
   const pendingLifetime = 2 * 60 * 1000;
   const pending = new Map();
+  const navigationVersions = new Map();
+  const documentTargets = new Map();
   const op = globalThis.OnePassword;
   let desktopPaused = false;
   let writes = Promise.resolve();
@@ -21,6 +23,7 @@ importScripts("ext/sjcl.js", "global.min.js");
   function persist(tabId, record) {
     const key = statePrefix + tabId;
     const snapshot = record && JSON.parse(JSON.stringify(record));
+    if (snapshot) delete snapshot.checking;
     writes = writes.then(() => snapshot
       ? chrome.storage.session.set({ [key]: snapshot })
       : chrome.storage.session.remove(key)).catch(report);
@@ -33,9 +36,23 @@ importScripts("ext/sjcl.js", "global.min.js");
     clear.call(op, tabId);
     track.call(op, operation, tabId);
     if (Number.isInteger(tabId) && tabId >= 0) {
-      const record = { operation, createdAt: Date.now(), notifyOnLoad: false };
+      const record = { operation, createdAt: Date.now(), notifyOnLoad: false,
+        navigationVersion: navigationVersions.get(tabId) || 0 };
       pending.set(tabId, record);
       persist(tabId, record);
+      queueMicrotask(async () => {
+        if (record.notifyOnLoad) return; // Bookmarks bind only through onCommitted.
+        try {
+          const frame = await chrome.webNavigation.getFrame({ tabId, frameId: 0 });
+          if (freshRecord(tabId) === record && !record.documentId &&
+              record.navigationVersion === (navigationVersions.get(tabId) || 0) &&
+              frame?.documentLifecycle === "active" && urlKey(frame.url) === urlKey(operation.url)) {
+            record.documentId = frame.documentId;
+            record.documentURL = urlKey(frame.url);
+            persist(tabId, record);
+          }
+        } catch { /* A new tab may not have committed yet. */ }
+      });
     }
   };
   op.clearGoAndFillForTab = op.ta = function (tabId) {
@@ -46,23 +63,77 @@ importScripts("ext/sjcl.js", "global.min.js");
     }
   };
 
+  function urlKey(value) {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    // Match URLSearchParams normalization used by the legacy bookmark parser.
+    url.search = url.searchParams.toString();
+    return url.href;
+  }
+
+  function freshRecord(tabId) {
+    const record = pending.get(tabId);
+    if (record && (!Number.isFinite(record.createdAt) ||
+        Date.now() < record.createdAt || Date.now() - record.createdAt >= pendingLifetime)) {
+      op.clearGoAndFillForTab(tabId);
+      return null;
+    }
+    return record;
+  }
+
+  function cancelNavigation(tabId) {
+    navigationVersions.set(tabId, (navigationVersions.get(tabId) || 0) + 1);
+    op.clearGoAndFillForTab(tabId);
+    for (const [id, target] of documentTargets) {
+      if (target.tabId === tabId) {
+        documentTargets.delete(id);
+        delete op.K[id];
+      }
+    }
+  }
+
+  async function currentDocument(tabId, record) {
+    const [tab, frame] = await Promise.all([
+      chrome.tabs.get(tabId),
+      chrome.webNavigation.getFrame({ tabId, frameId: 0 })
+    ]);
+    return freshRecord(tabId) === record &&
+      record.navigationVersion === (navigationVersions.get(tabId) || 0) &&
+      !tab.pendingUrl && frame?.documentLifecycle === "active" && !frame.errorOccurred &&
+      frame.documentId === record.documentId && urlKey(frame.url) === record.documentURL;
+  }
+
+  // Legacy lookups must not use expired operations even if no alarm/event ran.
+  const lookup = op.goAndFillOperationForTabReference;
+  op.goAndFillOperationForTabReference = op.Nb = function (tabId) {
+    freshRecord(tabId);
+    return lookup.call(op, tabId);
+  };
+  const findTab = op.tabReferenceForGoAndFillOperationPropertyValue;
+  op.tabReferenceForGoAndFillOperationPropertyValue = op.jb = function (...args) {
+    for (const tabId of pending.keys()) freshRecord(tabId);
+    return findTab.apply(op, args);
+  };
+
   async function restoreState() {
     const state = await chrome.storage.session.get(null);
     desktopPaused = state[pauseKey] === true;
     for (const [key, record] of Object.entries(state)) {
       if (!key.startsWith(statePrefix)) continue;
       const tabId = Number(key.slice(statePrefix.length));
-      if (!Number.isInteger(tabId) || !record?.operation ||
-          Date.now() - record.createdAt > pendingLifetime) {
+      if (!Number.isInteger(tabId) || !record?.operation || !record.documentId ||
+          !Number.isFinite(record.createdAt) || Date.now() < record.createdAt ||
+          Date.now() - record.createdAt >= pendingLifetime || navigationVersions.has(tabId)) {
         await chrome.storage.session.remove(key);
         continue;
       }
+      record.navigationVersion = 0;
+      pending.set(tabId, record);
       try {
-        await chrome.tabs.get(tabId);
+        if (!await currentDocument(tabId, record)) throw new Error("Abandoned navigation");
         track.call(op, record.operation, tabId);
-        pending.set(tabId, record);
       } catch {
-        await chrome.storage.session.remove(key);
+        op.clearGoAndFillForTab(tabId);
       }
     }
   }
@@ -104,15 +175,24 @@ importScripts("ext/sjcl.js", "global.min.js");
     return pause.call(this, duration);
   };
 
-  function flushBookmarks() {
-    if (!Agent.c || !Agent.c.da("loginBookmarkLoaded")) return;
-    for (const [tabId, record] of pending) {
-      if (Date.now() - record.createdAt > pendingLifetime) {
-        op.clearGoAndFillForTab(tabId);
-      } else if (record.notifyOnLoad && record.completed) {
+  async function flushBookmarks() {
+    for (const tabId of pending.keys()) {
+      const record = freshRecord(tabId);
+      if (!record?.notifyOnLoad || !record.completed || record.checking) continue;
+      record.checking = true;
+      try {
+        if (!await currentDocument(tabId, record)) {
+          if (pending.get(tabId) === record) op.clearGoAndFillForTab(tabId);
+          continue;
+        }
+        if (!Agent.c?.da("loginBookmarkLoaded")) continue;
         record.notifyOnLoad = false;
         persist(tabId, record);
         Agent.sendLoginBookmarkLoaded(record.operation.itemUUID, record.operation.vaultUUID);
+      } catch {
+        if (pending.get(tabId) === record) op.clearGoAndFillForTab(tabId);
+      } finally {
+        record.checking = false;
       }
     }
   }
@@ -161,7 +241,23 @@ importScripts("ext/sjcl.js", "global.min.js");
   // Register Chrome listeners synchronously, before storage/connection setup.
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (!sender.tab || sender.id !== chrome.runtime.id) return false;
-    ready.then(() => {
+    const version = navigationVersions.get(sender.tab.id) || 0;
+    ready.then(async () => {
+      if (version !== (navigationVersions.get(sender.tab.id) || 0)) return respond({});
+      if (message?.command === "collectDocumentResults") {
+        if (!sender.documentId || !sender.url || urlKey(sender.url) !== urlKey(message.params?.url)) {
+          return respond({});
+        }
+        documentTargets.set(message.params.documentUUID, {
+          tabId: sender.tab.id, frameId: sender.frameId, documentId: sender.documentId,
+          url: urlKey(sender.url), version, createdAt: Date.now(),
+          operationCreatedAt: freshRecord(sender.tab.id)?.createdAt
+        });
+      }
+      if (message?.command === "checkForGoAndFill") {
+        const record = freshRecord(sender.tab.id);
+        if (record && !await currentDocument(sender.tab.id, record)) return respond({});
+      }
       if (message?.command) {
         const result = performCommand(sender.tab, message.command, message.params,
           response => respond(response || {}));
@@ -217,25 +313,88 @@ importScripts("ext/sjcl.js", "global.min.js");
     }).catch(report);
   });
   chrome.tabs.onRemoved.addListener(tabId => {
+    cancelNavigation(tabId);
     ready.then(() => op.clearGoAndFillForTab(tabId)).catch(report);
   });
   chrome.webNavigation.onBeforeNavigate.addListener(details => {
     if (details.frameId !== 0) return;
-    // Capture the original URL before DNR removes the bookmark parameters.
-    // Both navigation handlers wait on ready, so tracking precedes completion
-    // even when this navigation wakes a cold worker. The redirect stays on
-    // HTTP(S), allowing Go & Fill in spanning-mode incognito tabs as well.
-    ready.then(() => prepareBookmark(details.url, details.tabId)).catch(report);
-  }, { url: [{ schemes: ["http", "https"] }] });
+    const previous = freshRecord(details.tabId);
+    // A provisional repeat to the cleaned DNR destination is still the same
+    // operation. Once committed, even a same-URL reload cancels it.
+    const continuation = previous && !previous.documentId &&
+      urlKey(details.url) === urlKey(previous.operation.url);
+    if (!continuation) cancelNavigation(details.tabId);
+    const version = navigationVersions.get(details.tabId) || 0;
+    ready.then(() => {
+      if (version !== (navigationVersions.get(details.tabId) || 0) || continuation) return;
+      prepareBookmark(details.url, details.tabId);
+    }).catch(report);
+  });
+  chrome.webNavigation.onCommitted.addListener(details => {
+    if (details.frameId !== 0) return;
+    const version = navigationVersions.get(details.tabId) || 0;
+    ready.then(() => {
+      const record = freshRecord(details.tabId);
+      if (!record || record.navigationVersion !== version ||
+          version !== (navigationVersions.get(details.tabId) || 0)) return;
+      const url = urlKey(details.url);
+      if (record.documentId === details.documentId && record.documentURL === url) return;
+      if (record.documentId || !details.documentId || !url ||
+          details.documentLifecycle !== "active" ||
+          (url !== urlKey(record.operation.url) &&
+           !details.transitionQualifiers?.includes("server_redirect"))) {
+        cancelNavigation(details.tabId);
+        return;
+      }
+      record.documentId = details.documentId;
+      record.documentURL = url;
+      persist(details.tabId, record);
+    }).catch(report);
+  });
+  const abandonNavigation = details => {
+    if (details.frameId === 0) {
+      cancelNavigation(details.tabId);
+      ready.then(() => op.clearGoAndFillForTab(details.tabId)).catch(report);
+    }
+  };
+  chrome.webNavigation.onErrorOccurred.addListener(abandonNavigation);
+  chrome.webNavigation.onHistoryStateUpdated.addListener(abandonNavigation);
+  chrome.webNavigation.onReferenceFragmentUpdated.addListener(abandonNavigation);
   chrome.webNavigation.onDOMContentLoaded.addListener(details => {
     if (details.frameId !== 0) return;
-    if (!["http:", "https:"].includes(new URL(details.url).protocol)) return;
     ready.then(() => {
-      const record = pending.get(details.tabId);
-      if (!record?.notifyOnLoad) return;
+      const record = freshRecord(details.tabId);
+      if (!record?.notifyOnLoad || record.documentId !== details.documentId ||
+          record.documentURL !== urlKey(details.url)) return;
       record.completed = true;
       persist(details.tabId, record);
-      flushBookmarks();
+      flushBookmarks().catch(report);
     }).catch(report);
-  }, { url: [{ schemes: ["http", "https"] }] });
+  });
+
+  // Pin credential-bearing messages to the document that supplied the fields.
+  // The legacy domain checks still run before this dispatch boundary.
+  const send = z;
+  z = function (tab, name, message) {
+    if (!["executeFillScript", "legacy_executeFillScript"].includes(name)) {
+      return send(tab, name, message);
+    }
+    const target = documentTargets.get(message?.documentUUID);
+    if (!target) return;
+    (async () => {
+      const [currentTab, frame] = await Promise.all([
+        chrome.tabs.get(target.tabId),
+        chrome.webNavigation.getFrame({ tabId: target.tabId, frameId: target.frameId })
+      ]);
+      if (documentTargets.get(message.documentUUID) !== target ||
+          target.version !== (navigationVersions.get(target.tabId) || 0) ||
+          Date.now() - target.createdAt >= pendingLifetime || currentTab.pendingUrl ||
+          (target.operationCreatedAt !== undefined &&
+           Date.now() - target.operationCreatedAt >= pendingLifetime) ||
+          frame?.documentLifecycle !== "active" || frame.errorOccurred ||
+          frame.documentId !== target.documentId || urlKey(frame.url) !== target.url) return;
+      chrome.tabs.sendMessage(target.tabId, { name, message },
+        { documentId: target.documentId }, () => { void chrome.runtime.lastError; });
+    })().catch(() => {}); // Closed or replaced documents must not receive a fill.
+  };
 })();

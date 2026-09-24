@@ -23,8 +23,8 @@ were made as part of the security review.
 
 ## 1. Pending Go & Fill requests can outlive their initiating navigation
 
-**Status:** Open; security-relevant lifecycle gap. Cross-domain password theft
-was not demonstrated.
+**Status:** Fix implemented; mocked regression checks pass. Browser verification
+is pending. Cross-domain password theft was not demonstrated in the review.
 
 **Locations:** [`src/service-worker.js`](../src/service-worker.js),
 `prepareBookmark`, `flushBookmarks`, `restoreState`, and the
@@ -70,6 +70,26 @@ than a demonstrated newly introduced domain-check bypass.
   in the same tab.
 - Revalidate the current target and operation age before notifying the desktop
   or executing a fill, while retaining the existing domain checks.
+
+### Implemented correction
+
+Pending operations bind to Chrome's committed document ID and URL. A new
+navigation after commit, failed navigation, history-state change, or fragment
+change cancels the operation. Server redirects within a tracked navigation can
+bind to the resulting document; ambiguous or restarted navigation sequences
+cancel safely and may require retrying Go & Fill. Restoration rejects operations
+that never committed or whose document has been replaced.
+
+Before notifying the desktop, the worker checks the current document, pending
+navigation, and operation age. It rechecks identity after asynchronous browser
+calls. Credential-bearing messages are separately validated and addressed to
+the exact Chrome document that supplied the collected fields. The legacy domain
+checks remain in place.
+
+`node --test tests/*.test.cjs` covers these cases, including a navigation change
+during asynchronous bookmark/fill validation. These checks use mocked Chrome
+APIs. Manually verify regular and incognito filling, subframe login forms,
+redirecting login pages, cancellation, and worker restart before deployment.
 
 ## 2. Navigation metadata survives worker shutdown without guaranteed expiry
 

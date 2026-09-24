@@ -7,11 +7,11 @@ const { webcrypto } = require("node:crypto");
 const sourceDir = path.join(__dirname, "../../src");
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-function event() {
+function event(beforeEmit = () => {}) {
   const listeners = [];
   return {
     addListener: listener => listeners.push(listener),
-    emit: (...args) => listeners.forEach(listener => listener(...args))
+    emit: (...args) => { beforeEmit(...args); listeners.forEach(listener => listener(...args)); }
   };
 }
 
@@ -38,11 +38,19 @@ function storage(initial = {}) {
   };
 }
 
-async function loadWorker({ session = storage(), beforeReady = () => {} } = {}) {
+async function loadWorker({ session = storage(), beforeReady = () => {},
+  frames = new Map(), tabs = new Map(), now = Date.now } = {}) {
   const ports = [];
   const timers = new Map();
   const errors = [];
   let timerId = 0;
+  const sentMessages = [];
+  const updateFrame = details => {
+    frames.set(`${details.tabId}:${details.frameId}`, {
+      ...details, documentLifecycle: details.documentLifecycle || "active", errorOccurred: false
+    });
+    if (details.frameId === 0) tabs.set(details.tabId, { id: details.tabId, url: details.url });
+  };
   const local = storage({
     OPExtensionIdentifier: "old-id",
     "old-id": JSON.stringify({ extId: "old-id", state: "new" })
@@ -72,11 +80,26 @@ async function loadWorker({ session = storage(), beforeReady = () => {} } = {}) 
     alarms: { create: async () => {}, clear: async () => {}, onAlarm: event() },
     contextMenus: { onClicked: event() },
     windows: { onFocusChanged: event() },
-    tabs: { get: async id => ({ id }), onUpdated: event(), onRemoved: event() },
-    webNavigation: { onBeforeNavigate: event(), onDOMContentLoaded: event() }
+    tabs: {
+      get: async id => tabs.get(id) || ({ id }), onUpdated: event(), onRemoved: event(),
+      sendMessage: (...args) => { sentMessages.push(args); args.at(-1)?.({}); }
+    },
+    webNavigation: {
+      getFrame: async ({ tabId, frameId }) => frames.get(`${tabId}:${frameId}`),
+      onBeforeNavigate: event(details => {
+        if (details.frameId === 0) tabs.set(details.tabId,
+          { ...tabs.get(details.tabId), id: details.tabId, pendingUrl: details.url });
+      }),
+      onCommitted: event(updateFrame), onDOMContentLoaded: event(), onErrorOccurred: event(),
+      onHistoryStateUpdated: event(updateFrame), onReferenceFragmentUpdated: event(updateFrame)
+    }
   };
   const context = vm.createContext({
     chrome, URL, crypto: webcrypto,
+    Date: class extends Date {
+      constructor(...args) { super(...(args.length ? args : [now()])); }
+      static now() { return now(); }
+    },
     navigator: { userAgent: "review-test", platform: "MacIntel" },
     console: { info() {}, warn() {}, log() {}, error: (...args) => errors.push(args) },
     queueMicrotask,
@@ -94,7 +117,7 @@ async function loadWorker({ session = storage(), beforeReady = () => {} } = {}) 
   beforeReady(chrome);
   await settle();
   assert.equal(ports.length, 1);
-  return { context, chrome, ports, timers, local, session, errors };
+  return { context, chrome, ports, timers, local, session, errors, frames, tabs, sentMessages };
 }
 
 module.exports = { loadWorker, settle, storage };

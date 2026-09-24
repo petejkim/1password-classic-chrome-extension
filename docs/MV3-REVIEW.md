@@ -88,7 +88,7 @@ closed for a cold-start check.
 
 ## 3. [P2] The WebSocket fallback can lose its connection while idle
 
-**Status:** Fixed
+**Status:** Fixed in commit [`b2582fd`](https://github.com/petejkim/1password-classic-chrome-extension/commit/b2582fddaa4b01afb1fc4077977d2b1f337a72fb).
 
 **Retry timing:** While the worker is running, the WebSocket fallback retries
 automatically after a connection failure unless authorization was rejected.

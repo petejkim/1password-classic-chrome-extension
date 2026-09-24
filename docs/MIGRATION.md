@@ -29,15 +29,21 @@ and desktop authorization still apply.
   native connection attempts, reset disconnected native ports, and removed the
   old Chrome event setup. The original authentication and filling code remains.
 - `service-worker.js`: synchronous Chrome event registration, MV3 context menu,
-  native connection setup, retry wakeup alarm, and session storage for pending
-  navigation metadata. Pending navigation records expire after two minutes;
-  password values and in-flight filling callbacks are not persisted. A worker
-  restart reconnects and authenticates the desktop transport.
+  native connection setup, retry wakeup alarm, and minimal session snapshots for
+  unsent bookmarks bound to committed documents. Snapshots contain item/vault
+  IDs, Chrome document ID, creation time, completion state, and a URL fingerprint.
+  Full URLs, desktop contexts, password values, and in-flight filling callbacks
+  are not persisted. A worker restart reconnects and authenticates the desktop
+  transport. Operations already sent to the desktop require a retry after restart.
 - Go & Fill operations bind to the committed document. Abandoned navigations,
   history/fragment changes, and expired operations are canceled. Pending state
   can resume only when its committed document still matches. Credential messages
   target the Chrome document that supplied the fields. Ambiguous redirect or
   restarted navigation sequences cancel safely and may require a retry.
+- Pending operations and collected-document routing metadata have a two-minute
+  deadline, with timer/alarm cleanup and startup purging. Expiry checks at use
+  and storage-write time reject stale work even if browser suspension delays
+  cleanup. Session storage access is restricted to trusted extension contexts.
 - `go-and-fill-rules.json`: replaces the blocking webRequest redirect. GET
   navigations containing a nonempty `onepasswdfill` parameter redirect directly
   to the website with `onepasswdfill` and `onepasswdvault` removed. The worker

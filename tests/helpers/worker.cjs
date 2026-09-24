@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { webcrypto } = require("node:crypto");
+const { webcrypto, createHash } = require("node:crypto");
 
 const sourceDir = path.join(__dirname, "../../src");
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -19,6 +19,7 @@ function storage(initial = {}) {
   const values = { ...initial };
   return {
     values,
+    async setAccessLevel({ accessLevel }) { this.accessLevel = accessLevel; },
     get(key, callback) {
       const result = key === null ? { ...values }
         : Object.fromEntries([key].flat().filter(k => k in values).map(k => [k, values[k]]));
@@ -45,6 +46,7 @@ async function loadWorker({ session = storage(), beforeReady = () => {},
   const errors = [];
   let timerId = 0;
   const sentMessages = [];
+  const alarms = new Map();
   const updateFrame = details => {
     frames.set(`${details.tabId}:${details.frameId}`, {
       ...details, documentLifecycle: details.documentLifecycle || "active", errorOccurred: false
@@ -77,7 +79,10 @@ async function loadWorker({ session = storage(), beforeReady = () => {},
     },
     storage: { local, session },
     action: { enable: async () => {}, disable: async () => {}, onClicked: event() },
-    alarms: { create: async () => {}, clear: async () => {}, onAlarm: event() },
+    alarms: {
+      create: async (name, options) => { alarms.set(name, options); },
+      clear: async name => alarms.delete(name), onAlarm: event()
+    },
     contextMenus: { onClicked: event() },
     windows: { onFocusChanged: event() },
     tabs: {
@@ -95,7 +100,16 @@ async function loadWorker({ session = storage(), beforeReady = () => {},
     }
   };
   const context = vm.createContext({
-    chrome, URL, crypto: webcrypto,
+    chrome, URL, TextEncoder,
+    crypto: {
+      getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
+      randomUUID: webcrypto.randomUUID.bind(webcrypto),
+      // Deterministic microtask scheduling instead of Node's worker-thread pool.
+      subtle: { digest: async (algorithm, bytes) => {
+        assert.equal(algorithm, "SHA-256");
+        return Uint8Array.from(createHash("sha256").update(bytes).digest()).buffer;
+      } }
+    },
     Date: class extends Date {
       constructor(...args) { super(...(args.length ? args : [now()])); }
       static now() { return now(); }
@@ -117,7 +131,7 @@ async function loadWorker({ session = storage(), beforeReady = () => {},
   beforeReady(chrome);
   await settle();
   assert.equal(ports.length, 1);
-  return { context, chrome, ports, timers, local, session, errors, frames, tabs, sentMessages };
+  return { context, chrome, ports, timers, local, session, errors, frames, tabs, sentMessages, alarms };
 }
 
 module.exports = { loadWorker, settle, storage };

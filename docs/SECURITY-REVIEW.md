@@ -12,8 +12,8 @@ HTTP/HTTPS redirect.
 The review did not identify a demonstrated new password-exfiltration or
 authentication-bypass path. It did identify security-relevant gaps in pending
 navigation handling and metadata retention, plus a change in responsibility
-for security updates. The navigation and retention gaps should be addressed
-before treating the migration as security-complete.
+for security updates. Follow-up navigation and retention fixes are recorded
+below; they do not replace end-to-end browser and desktop verification.
 
 This assessment is based on source comparison and synthetic checks using the
 actual legacy bundle and service worker with mocked Chrome APIs. It is not an
@@ -93,8 +93,8 @@ redirecting login pages, cancellation, and worker restart before deployment.
 
 ## 2. Navigation metadata survives worker shutdown without guaranteed expiry
 
-**Status:** Open; data-minimization and retention concern. Website-readable
-disclosure was not demonstrated.
+**Status:** Fix implemented; mocked regression checks pass. Browser verification
+is pending. Website-readable disclosure was not demonstrated in the review.
 
 **Locations:** [`src/service-worker.js`](../src/service-worker.js), `persist`,
 `restoreState`, and `flushBookmarks`.
@@ -129,6 +129,37 @@ encrypted passwords to plaintext password storage.
 - Enforce expiry independently of successful filling and revalidate age at
   every use; browser scheduling delays should never make expired records usable.
 - Preserve the default restriction on content-script access to session storage.
+
+### Implemented correction
+
+Session storage now contains only an allowlisted snapshot of an unsent bookmark
+that has a committed document: schema version, creation time, item and vault
+IDs, Chrome document ID, completion flag, and a SHA-256 fingerprint of the
+normalized URL. Full URLs, userinfo, query strings, fragments, allowed-domain
+lists, and desktop contexts are not copied to session storage. The fingerprint
+supports exact target validation; it is not encryption or an anonymity guarantee.
+Access is explicitly restricted to trusted extension contexts.
+
+Snapshots are removed after desktop notification or cancellation. Uncommitted
+bookmarks and desktop-initiated operations are not persisted. Restoration drops
+old snapshot formats and verifies the document and URL fingerprint before
+reconstructing the live operation from the current browser document. Operations
+already handed to the desktop do not resume across worker restart; retrying may
+be necessary.
+
+A timer and a Chrome alarm schedule cleanup at the earliest two-minute deadline
+for pending operations and collected-document routing metadata. Startup also
+purges expired state. Browser suspension can delay physical cleanup, so expiry
+is independently enforced during lookup, restoration, notification, credential
+dispatch, and before asynchronous storage writes. Delayed work cannot extend an
+operation's validity or write expired metadata back into session storage.
+
+`node --test tests/*.test.cjs` includes checks for sensitive URL/context omission,
+post-notification removal, timer and alarm cleanup without desktop connection,
+expired/legacy snapshots, URL changes across restart, delayed hashing, and
+credential dispatch when cleanup delivery is delayed. Manually verify normal
+and incognito Go & Fill, redirects, and worker restart with the real browser
+and desktop app.
 
 ## 3. Vendor security updates are no longer automatic
 

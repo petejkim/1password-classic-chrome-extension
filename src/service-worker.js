@@ -4,6 +4,7 @@ importScripts("ext/sjcl.js", "global.min.js");
 (() => {
   const menuId = "onepassword";
   const reconnectAlarm = "onepassword-reconnect";
+  const expiryAlarm = "onepassword-pending-expiry";
   const statePrefix = "mv3.goAndFill.";
   const pauseKey = "mv3.desktopPaused";
   const pendingLifetime = 2 * 60 * 1000;
@@ -13,21 +14,78 @@ importScripts("ext/sjcl.js", "global.min.js");
   const op = globalThis.OnePassword;
   let desktopPaused = false;
   let writes = Promise.resolve();
+  let expiryTimer;
 
   function report(error) {
     console.error("[1Password MV3]", error);
   }
 
-  // Serialize changes so a completed/cleared operation cannot be resurrected by
-  // an earlier storage write. Only navigation metadata is stored, not logins.
+  function expired(createdAt) {
+    return !Number.isFinite(createdAt) || Date.now() < createdAt ||
+      Date.now() - createdAt >= pendingLifetime;
+  }
+
+  async function fingerprint(url) {
+    const bytes = new TextEncoder().encode(urlKey(url));
+    const hash = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  // Resume only an unsent bookmark bound to a committed document. Never copy
+  // URLs, fragments, userinfo, desktop contexts, or whole operation objects.
+  // Serialize writes/removals so canceled state cannot be resurrected.
   function persist(tabId, record) {
     const key = statePrefix + tabId;
-    const snapshot = record && JSON.parse(JSON.stringify(record));
-    if (snapshot) delete snapshot.checking;
-    writes = writes.then(() => snapshot
-      ? chrome.storage.session.set({ [key]: snapshot })
-      : chrome.storage.session.remove(key)).catch(report);
+    const snapshot = record?.notifyOnLoad && record.documentId ? {
+      schema: 2, createdAt: record.createdAt, itemUUID: record.operation.itemUUID,
+      vaultUUID: record.operation.vaultUUID, documentId: record.documentId,
+      completed: record.completed === true
+    } : null;
+    const url = snapshot ? record.documentURL : null;
+    const valid = () => snapshot && pending.get(tabId) === record &&
+      record.notifyOnLoad && !expired(snapshot.createdAt);
+    writes = writes.then(async () => {
+      if (!valid()) return chrome.storage.session.remove(key);
+      snapshot.documentURLHash = await fingerprint(url);
+      // Hashing/storage can be delayed, so check the deadline again before writing.
+      if (!valid()) return chrome.storage.session.remove(key);
+      await chrome.storage.session.set({ [key]: snapshot });
+    }).catch(report);
     return writes;
+  }
+
+  function targetExpired(target) {
+    return expired(target.createdAt) ||
+      (target.operationCreatedAt !== undefined && expired(target.operationCreatedAt));
+  }
+
+  function scheduleExpiry() {
+    clearTimeout(expiryTimer);
+    let deadline = Infinity;
+    for (const record of pending.values()) deadline = Math.min(deadline, record.createdAt + pendingLifetime);
+    for (const target of documentTargets.values()) {
+      deadline = Math.min(deadline, target.createdAt + pendingLifetime,
+        (target.operationCreatedAt ?? target.createdAt) + pendingLifetime);
+    }
+    if (deadline === Infinity) {
+      chrome.alarms.clear(expiryAlarm).catch(report);
+      return;
+    }
+    expiryTimer = setTimeout(cleanupExpired, Math.max(0, deadline - Date.now()));
+    // The alarm survives worker shutdown; the timer gives timely cleanup while
+    // the native port keeps this worker alive. Neither is trusted for validity.
+    chrome.alarms.create(expiryAlarm, { when: deadline }).catch(report);
+  }
+
+  function cleanupExpired() {
+    for (const tabId of pending.keys()) freshRecord(tabId);
+    for (const [id, target] of documentTargets) {
+      if (targetExpired(target)) {
+        documentTargets.delete(id);
+        delete op.K[id];
+      }
+    }
+    scheduleExpiry();
   }
 
   const track = op.trackGoAndFillOperationForTabReference;
@@ -39,6 +97,7 @@ importScripts("ext/sjcl.js", "global.min.js");
       const record = { operation, createdAt: Date.now(), notifyOnLoad: false,
         navigationVersion: navigationVersions.get(tabId) || 0 };
       pending.set(tabId, record);
+      scheduleExpiry();
       persist(tabId, record);
       queueMicrotask(async () => {
         if (record.notifyOnLoad) return; // Bookmarks bind only through onCommitted.
@@ -59,6 +118,7 @@ importScripts("ext/sjcl.js", "global.min.js");
     clear.call(op, tabId);
     if (Number.isInteger(tabId) && tabId >= 0) {
       pending.delete(tabId);
+      scheduleExpiry();
       persist(tabId, null);
     }
   };
@@ -73,8 +133,7 @@ importScripts("ext/sjcl.js", "global.min.js");
 
   function freshRecord(tabId) {
     const record = pending.get(tabId);
-    if (record && (!Number.isFinite(record.createdAt) ||
-        Date.now() < record.createdAt || Date.now() - record.createdAt >= pendingLifetime)) {
+    if (record && expired(record.createdAt)) {
       op.clearGoAndFillForTab(tabId);
       return null;
     }
@@ -90,6 +149,7 @@ importScripts("ext/sjcl.js", "global.min.js");
         delete op.K[id];
       }
     }
+    scheduleExpiry();
   }
 
   async function currentDocument(tabId, record) {
@@ -118,24 +178,41 @@ importScripts("ext/sjcl.js", "global.min.js");
   async function restoreState() {
     const state = await chrome.storage.session.get(null);
     desktopPaused = state[pauseKey] === true;
-    for (const [key, record] of Object.entries(state)) {
+    for (const [key, saved] of Object.entries(state)) {
       if (!key.startsWith(statePrefix)) continue;
       const tabId = Number(key.slice(statePrefix.length));
-      if (!Number.isInteger(tabId) || !record?.operation || !record.documentId ||
-          !Number.isFinite(record.createdAt) || Date.now() < record.createdAt ||
-          Date.now() - record.createdAt >= pendingLifetime || navigationVersions.has(tabId)) {
+      if (!Number.isInteger(tabId) || tabId < 0 || saved?.schema !== 2 ||
+          typeof saved.itemUUID !== "string" || !saved.itemUUID ||
+          typeof saved.vaultUUID !== "string" || typeof saved.documentId !== "string" ||
+          typeof saved.completed !== "boolean" ||
+          typeof saved.documentURLHash !== "string" || !/^[a-f0-9]{64}$/.test(saved.documentURLHash) ||
+          expired(saved.createdAt) || navigationVersions.has(tabId)) {
         await chrome.storage.session.remove(key);
         continue;
       }
-      record.navigationVersion = 0;
-      pending.set(tabId, record);
       try {
+        const frame = await chrome.webNavigation.getFrame({ tabId, frameId: 0 });
+        if (!frame || !urlKey(frame.url) || frame.documentId !== saved.documentId ||
+            await fingerprint(frame.url) !== saved.documentURLHash ||
+            navigationVersions.has(tabId) || expired(saved.createdAt)) {
+          throw new Error("Abandoned navigation");
+        }
+        const record = {
+          operation: { itemUUID: saved.itemUUID, vaultUUID: saved.vaultUUID,
+            url: frame.url, nakedDomains: null, uuid: crypto.randomUUID(), context: null },
+          createdAt: saved.createdAt, navigationVersion: 0,
+          documentId: saved.documentId, documentURL: urlKey(frame.url),
+          notifyOnLoad: true, completed: saved.completed
+        };
+        pending.set(tabId, record);
         if (!await currentDocument(tabId, record)) throw new Error("Abandoned navigation");
         track.call(op, record.operation, tabId);
+        persist(tabId, record); // Rewrite through the allowlist, dropping any extra fields.
       } catch {
         op.clearGoAndFillForTab(tabId);
       }
     }
+    cleanupExpired();
   }
 
   op.setToolbarButtonEnabled = function (enabled) {
@@ -202,9 +279,8 @@ importScripts("ext/sjcl.js", "global.min.js");
     queueMicrotask(flushBookmarks);
   });
 
-  const ready = restoreState().then(() => {
-    Agent.connect();
-  });
+  const ready = chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
+    .then(restoreState).then(() => Agent.connect());
   ready.catch(report);
 
   async function openPopup(source, url) {
@@ -253,6 +329,7 @@ importScripts("ext/sjcl.js", "global.min.js");
           url: urlKey(sender.url), version, createdAt: Date.now(),
           operationCreatedAt: freshRecord(sender.tab.id)?.createdAt
         });
+        scheduleExpiry();
       }
       if (message?.command === "checkForGoAndFill") {
         const record = freshRecord(sender.tab.id);
@@ -292,6 +369,7 @@ importScripts("ext/sjcl.js", "global.min.js");
     ready.catch(report);
   });
   chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === expiryAlarm) ready.then(cleanupExpired).catch(report);
     if (alarm.name === reconnectAlarm) {
       // A cold worker reconnects in `ready`; a live worker already has the
       // transport's retry timer. Do not open a competing connection here.
@@ -379,6 +457,7 @@ importScripts("ext/sjcl.js", "global.min.js");
     if (!["executeFillScript", "legacy_executeFillScript"].includes(name)) {
       return send(tab, name, message);
     }
+    cleanupExpired();
     const target = documentTargets.get(message?.documentUUID);
     if (!target) return;
     (async () => {
@@ -388,9 +467,7 @@ importScripts("ext/sjcl.js", "global.min.js");
       ]);
       if (documentTargets.get(message.documentUUID) !== target ||
           target.version !== (navigationVersions.get(target.tabId) || 0) ||
-          Date.now() - target.createdAt >= pendingLifetime || currentTab.pendingUrl ||
-          (target.operationCreatedAt !== undefined &&
-           Date.now() - target.operationCreatedAt >= pendingLifetime) ||
+          targetExpired(target) || currentTab.pendingUrl ||
           frame?.documentLifecycle !== "active" || frame.errorOccurred ||
           frame.documentId !== target.documentId || urlKey(frame.url) !== target.url) return;
       chrome.tabs.sendMessage(target.tabId, { name, message },

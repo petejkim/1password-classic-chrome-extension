@@ -51,7 +51,7 @@ test("pending bookmarks survive worker restart and remain associated with their 
   second.chrome.webNavigation.onDOMContentLoaded.emit(navigation(destination, 20));
   await settle();
   assert.equal(loadedBookmarks(second.ports[0])[0].payload.uuid, "OTHER");
-  assert.equal(session.values["mv3.goAndFill.10"].notifyOnLoad, true);
+  assert.ok(session.values["mv3.goAndFill.10"], "the other tab's unsent bookmark is retained");
   second.chrome.webNavigation.onDOMContentLoaded.emit(navigation(destination, 10));
   await settle();
   assert.equal(loadedBookmarks(second.ports[0])[1].payload.uuid, "ITEM");
@@ -184,4 +184,105 @@ test("credential messages are pinned to the collecting document and canceled on 
   release(oldFrame);
   await settle();
   assert.equal(sentMessages.length, 1, "a delayed fill must not reach a replacement page");
+});
+
+test("session snapshots omit sensitive URL components and desktop context, then disappear after notification", async () => {
+  const worker = await loadWorker();
+  const { chrome, context, session, ports } = worker;
+  const privateURL = "https://user:PRIVATE_PASSWORD@example.com/login?token=PRIVATE_TOKEN&onepasswdfill=ITEM&onepasswdvault=VAULT#PRIVATE_FRAGMENT";
+  const cleanedURL = privateURL.replace("&onepasswdfill=ITEM&onepasswdvault=VAULT", "");
+  chrome.webNavigation.onBeforeNavigate.emit(navigation(privateURL));
+  chrome.webNavigation.onCommitted.emit(navigation(cleanedURL));
+  await settle();
+  context.OnePassword.goAndFillOperationForTabReference(10).context = "PRIVATE_DESKTOP_CONTEXT";
+  chrome.webNavigation.onDOMContentLoaded.emit(navigation(cleanedURL));
+  await settle();
+  const saved = session.values["mv3.goAndFill.10"];
+  assert.equal(saved.itemUUID, "ITEM");
+  assert.equal(saved.vaultUUID, "VAULT");
+  assert.match(saved.documentURLHash, /^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(session.values).includes("PRIVATE_"), false);
+  assert.equal(saved.operation, undefined);
+  assert.equal(saved.url, undefined);
+  assert.equal(saved.context, undefined);
+  assert.equal(session.accessLevel, "TRUSTED_CONTEXTS");
+  welcome(ports[0]);
+  await settle();
+  assert.equal(session.values["mv3.goAndFill.10"], undefined);
+});
+
+test("timer and alarm cleanup remove stale metadata without desktop connection or navigation", async () => {
+  for (const trigger of ["timer", "alarm"]) {
+    let time = Date.now();
+    const worker = await loadedBookmark({ now: () => time });
+    const { context, session, alarms, timers, chrome } = worker;
+    assert.equal(alarms.get("onepassword-pending-expiry").when, time + 120000);
+    assert.ok(session.values["mv3.goAndFill.10"]);
+    time += 120000;
+    if (trigger === "timer") [...timers.values()].find(timer => timer.delay === 120000).callback();
+    else chrome.alarms.onAlarm.emit({ name: "onepassword-pending-expiry" });
+    await settle();
+    assert.equal(context.OnePassword.goAndFillOperationForTabReference(10), undefined, trigger);
+    assert.equal(session.values["mv3.goAndFill.10"], undefined, trigger);
+    assert.equal(alarms.has("onepassword-pending-expiry"), false, trigger);
+  }
+});
+
+test("a cold worker purges expired and legacy snapshots without resuming them", async () => {
+  let time = Date.now();
+  const first = await loadedBookmark({ now: () => time });
+  time += 120000;
+  first.session.values["mv3.goAndFill.20"] = { createdAt: time,
+    operation: { url: "https://example.com/?token=PRIVATE_LEGACY_TOKEN" } };
+  const second = await loadWorker({ session: first.session, frames: first.frames, now: () => time });
+  welcome(second.ports[0]);
+  await settle();
+  assert.deepEqual(first.session.values, {});
+  assert.equal(loadedBookmarks(second.ports[0]).length, 0);
+});
+
+test("URL fingerprint rejects same-document URL changes across restart", async () => {
+  const first = await loadedBookmark();
+  first.frames.set("10:0", { ...first.frames.get("10:0"), url: "https://example.com/other?token=different" });
+  const second = await loadWorker({ session: first.session, frames: first.frames });
+  welcome(second.ports[0]);
+  await settle();
+  assert.equal(first.session.values["mv3.goAndFill.10"], undefined);
+  assert.equal(loadedBookmarks(second.ports[0]).length, 0);
+});
+
+test("expiry during a delayed fingerprint cannot write stale metadata back", async () => {
+  let time = Date.now();
+  const { chrome, context, session } = await loadWorker({ now: () => time });
+  let release;
+  const digest = context.crypto.subtle.digest;
+  context.crypto.subtle.digest = async (...args) => {
+    const result = await digest(...args);
+    await new Promise(resolve => { release = resolve; });
+    return result;
+  };
+  chrome.webNavigation.onBeforeNavigate.emit(navigation(bookmarkURL));
+  chrome.webNavigation.onCommitted.emit(navigation(destination));
+  await settle();
+  time += 120000;
+  chrome.alarms.onAlarm.emit({ name: "onepassword-pending-expiry" });
+  release();
+  await settle();
+  assert.equal(session.values["mv3.goAndFill.10"], undefined);
+});
+
+test("expired field targets cannot receive credentials when cleanup delivery is delayed", async () => {
+  let time = Date.now();
+  const { chrome, context, sentMessages } = await loadedBookmark({ now: () => time });
+  chrome.runtime.onMessage.emit({ command: "collectDocumentResults", params: {
+    documentUUID: "expiring-fields", url: destination, context: "collection", fields: { fields: [] }
+  } }, { id: chrome.runtime.id, tab: { id: 10 }, frameId: 0,
+    documentId: "doc-10", url: destination }, () => {});
+  await settle();
+  assert.ok(context.OnePassword.K["expiring-fields"]);
+  time += 120000; // Deliberately do not deliver a timer or alarm.
+  context.z(10, "executeFillScript", { documentUUID: "expiring-fields", script: [] });
+  await settle();
+  assert.equal(sentMessages.length, 0);
+  assert.equal(context.OnePassword.K["expiring-fields"], undefined);
 });

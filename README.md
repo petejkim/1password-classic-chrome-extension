@@ -15,10 +15,14 @@ An unofficial Manifest V3 port of the classic 1Password browser extension for us
 
 1. Download the extension ZIP file from the [latest release](https://github.com/petejkim/1password-classic-chrome-extension/releases/latest).
 2. Extract the ZIP into a permanent folder. `manifest.json` must be directly inside the folder you select below.
-3. Open `chrome://extensions` and enable **Developer mode**.
-4. Disable the old extension, then click **Load unpacked** and select the extracted folder. Chrome cannot load the ZIP directly. If an existing copy with the same extension ID prevents installation, remove that copy first. This clears its stored authorization and may require pairing again.
-5. Click the 1Password toolbar button and complete desktop authorization if prompted.
-6. For incognito use, enable **Allow in incognito** in the extension's details.
+3. On macOS, open the extracted folder in Finder, open its `scripts` folder, and double-click **`register-chrome-native-host.command`**. Terminal opens and runs the script to register the 1Password 7 native messaging host with Google Chrome.
+
+   The script checks for the helper in `/Applications/1Password 7.app` and leaves existing registrations untouched. Read the result in Terminal and resolve any reported errors before continuing. This script is for macOS only and does not require `sudo`.
+
+4. Open 1Password 7, then open `chrome://extensions` and enable **Developer mode**.
+5. Disable the old extension, then click **Load unpacked** and select the extracted folder. Chrome cannot load the ZIP directly. If an existing copy with the same extension ID prevents installation, remove that copy first. This clears its stored authorization and may require pairing again. If you already loaded this extension before running the registration script, click **Reload** instead.
+6. Click the 1Password toolbar button and complete desktop authorization if prompted.
+7. For incognito use, enable **Allow in incognito** in the extension's details.
 
 Keep the extracted folder in place after installation. This unpacked build does not receive automatic vendor updates; install future releases manually.
 

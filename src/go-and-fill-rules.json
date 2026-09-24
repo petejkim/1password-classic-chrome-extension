@@ -5,7 +5,11 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "regexSubstitution": "chrome-extension://phicbbndgmmpogmijjkbmdhpioaieaha/go-and-fill.html#\\0"
+        "transform": {
+          "queryTransform": {
+            "removeParams": ["onepasswdfill", "onepasswdvault"]
+          }
+        }
       }
     },
     "condition": {

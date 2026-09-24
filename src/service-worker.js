@@ -5,12 +5,9 @@ importScripts("ext/sjcl.js", "global.min.js");
   const menuId = "onepassword";
   const reconnectAlarm = "onepassword-reconnect";
   const statePrefix = "mv3.goAndFill.";
-  const sourcePrefix = "mv3.navigationSource.";
   const pauseKey = "mv3.desktopPaused";
   const pendingLifetime = 2 * 60 * 1000;
   const pending = new Map();
-  const navigationSources = new Map();
-  const bridgeURL = chrome.runtime.getURL("go-and-fill.html");
   const op = globalThis.OnePassword;
   let desktopPaused = false;
   let writes = Promise.resolve();
@@ -142,35 +139,11 @@ importScripts("ext/sjcl.js", "global.min.js");
     else F(activeURL => op.showPopup(source, activeURL));
   }
 
-  async function prepareBookmark(message, sender) {
-    if (sender.id !== chrome.runtime.id || sender.frameId !== 0 ||
-        sender.url?.split("#")[0] !== bridgeURL || !sender.tab ||
-        typeof message.url !== "string") {
-      throw new Error("Invalid Go & Fill sender");
-    }
-    let source = new URL(message.url);
-    if (!["http:", "https:"].includes(source.protocol)) {
-      throw new Error("Go & Fill requires an HTTP or HTTPS destination");
-    }
-    await ready;
-    const tabId = sender.tab.id;
-    // Network URL matching can omit the original fragment. Recover it from the
-    // navigation event only when the rest of the URL matches this bridge load.
-    const sourceKey = sourcePrefix + tabId;
-    const savedSource = navigationSources.get(tabId) ||
-      (await chrome.storage.session.get(sourceKey))[sourceKey];
-    if (savedSource && Date.now() - savedSource.createdAt < pendingLifetime) {
-      const original = new URL(savedSource.url);
-      const originalWithoutHash = new URL(original.href);
-      originalWithoutHash.hash = "";
-      const sourceWithoutHash = new URL(source.href);
-      sourceWithoutHash.hash = "";
-      if (originalWithoutHash.href === sourceWithoutHash.href) source = original;
-    }
-    navigationSources.delete(tabId);
-    await chrome.storage.session.remove(sourceKey);
+  function prepareBookmark(url, tabId) {
+    const source = new URL(url);
+    if (!["http:", "https:"].includes(source.protocol)) return;
     const bookmark = op.checkForGoAndFillBookmarkLoaded(source.href);
-    if (!bookmark) throw new Error("This link has no Go & Fill item ID");
+    if (!bookmark) return;
     op.trackGoAndFillOperationForTabReference({
       itemUUID: bookmark.uuid,
       vaultUUID: bookmark.vaultUUID,
@@ -182,19 +155,11 @@ importScripts("ext/sjcl.js", "global.min.js");
     const record = pending.get(tabId);
     record.notifyOnLoad = true;
     record.completed = false;
-    await persist(tabId, record);
-    return { url: bookmark.url };
+    persist(tabId, record);
   }
 
   // Register Chrome listeners synchronously, before storage/connection setup.
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
-    if (message?.type === "mv3-prepare-go-and-fill") {
-      prepareBookmark(message, sender).then(respond, error => {
-        report(error);
-        respond({ error: error.message });
-      });
-      return true;
-    }
     if (!sender.tab || sender.id !== chrome.runtime.id) return false;
     ready.then(() => {
       if (message?.command) {
@@ -252,20 +217,19 @@ importScripts("ext/sjcl.js", "global.min.js");
     }).catch(report);
   });
   chrome.tabs.onRemoved.addListener(tabId => {
-    navigationSources.delete(tabId);
-    chrome.storage.session.remove(sourcePrefix + tabId).catch(report);
     ready.then(() => op.clearGoAndFillForTab(tabId)).catch(report);
   });
   chrome.webNavigation.onBeforeNavigate.addListener(details => {
     if (details.frameId !== 0) return;
-    const url = new URL(details.url);
-    if (!url.searchParams.get("onepasswdfill")) return;
-    const source = { url: url.href, createdAt: Date.now() };
-    navigationSources.set(details.tabId, source);
-    chrome.storage.session.set({ [sourcePrefix + details.tabId]: source }).catch(report);
+    // Capture the original URL before DNR removes the bookmark parameters.
+    // Both navigation handlers wait on ready, so tracking precedes completion
+    // even when this navigation wakes a cold worker. The redirect stays on
+    // HTTP(S), allowing Go & Fill in spanning-mode incognito tabs as well.
+    ready.then(() => prepareBookmark(details.url, details.tabId)).catch(report);
   }, { url: [{ schemes: ["http", "https"] }] });
   chrome.webNavigation.onDOMContentLoaded.addListener(details => {
     if (details.frameId !== 0) return;
+    if (!["http:", "https:"].includes(new URL(details.url).protocol)) return;
     ready.then(() => {
       const record = pending.get(details.tabId);
       if (!record?.notifyOnLoad) return;

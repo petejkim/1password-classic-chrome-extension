@@ -48,8 +48,10 @@ filling recovers without reloading the extension.
 
 ## 2. [P2] Go & Fill bookmarks break in incognito
 
-**Location:** [`src/go-and-fill-rules.json`](../src/go-and-fill-rules.json), line 8;
-[`src/manifest.json`](../src/manifest.json), line 67.
+**Status:** Fix implemented; browser verification pending.
+
+**Location:** [`src/go-and-fill-rules.json`](../src/go-and-fill-rules.json), redirect
+action; [`src/service-worker.js`](../src/service-worker.js), navigation handlers.
 
 The new declarative rule redirects Go & Fill navigations into
 `go-and-fill.html`, an extension page. The manifest retains
@@ -64,9 +66,26 @@ See [Chrome's incognito documentation](https://developer.chrome.com/docs/extensi
 If switching to split mode, also account for its separate background contexts
 and their native connections and authentication state.
 
+**Implemented correction:** Retained spanning mode and its shared desktop
+connection. The DNR rule now uses `queryTransform.removeParams` to redirect
+directly to the website, removing the two bookmark parameters. The worker
+tracks the item and vault IDs from `onBeforeNavigate` and notifies the desktop
+after the page DOM is loaded and the transport is ready. Tracking and completion
+both wait for worker initialization. The obsolete extension bridge and its
+web-accessible-resource declaration were removed. See
+[Chrome's query-transform documentation](https://developer.chrome.com/docs/extensions/reference/api/declarativeNetRequest#type-QueryTransform).
+
+**Automated verification:** `node --test tests/*.test.cjs` covers cold-worker
+navigation/completion ordering, waiting for desktop connection, retaining query
+parameters and fragments in operation metadata, worker restart, separate tab
+records, and ignoring subframes and non-bookmark URLs. These are mocked worker
+checks; actual Chrome redirects and incognito filling still need manual testing.
+
 **Manual check:** Allow the extension in incognito, then open a legacy Go & Fill
 bookmark in an incognito window. Confirm that the destination loads, the
-bookmark parameters are removed, and the intended item fills.
+bookmark parameters are removed, and the intended item fills. Repeat in a normal
+window and with additional query parameters and a fragment. Keep worker DevTools
+closed for a cold-start check.
 
 ## 3. [P2] The WebSocket fallback can lose its connection while idle
 

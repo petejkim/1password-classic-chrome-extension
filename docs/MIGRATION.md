@@ -14,8 +14,7 @@ newer and a compatible 1Password desktop application/helper.
 4. Click the 1Password toolbar button and complete any desktop authorization.
 
 The manifest public key is preserved. The expected extension ID is
-`phicbbndgmmpogmijjkbmdhpioaieaha`. The static Go & Fill rule uses that ID;
-changing the key requires updating `go-and-fill-rules.json` as well.
+`phicbbndgmmpogmijjkbmdhpioaieaha`.
 
 The Chrome native host configuration found on this machine already includes
 that extension ID in its allowed origins. Browser-specific native host setup
@@ -34,23 +33,36 @@ and desktop authorization still apply.
   navigation metadata. Pending navigation records expire after two minutes;
   password values and in-flight filling callbacks are not persisted. A worker
   restart reconnects and authenticates the desktop transport.
-- `go-and-fill-rules.json`, `go-and-fill.html`, `go-and-fill.js`: replace the
-  blocking webRequest redirect. GET navigations containing a nonempty
-  `onepasswdfill` parameter visit the extension bridge, which records the item
-  and vault IDs before navigating to the cleaned URL. Top-level navigation
-  events preserve the original fragment when omitted from network matching.
+- `go-and-fill-rules.json`: replaces the blocking webRequest redirect. GET
+  navigations containing a nonempty `onepasswdfill` parameter redirect directly
+  to the website with `onepasswdfill` and `onepasswdvault` removed. The worker
+  records the item and vault IDs from the original top-level navigation event.
+  Other query parameters and the fragment are retained. No extension bridge
+  page is needed, so the same path supports normal and incognito tabs while
+  keeping a single shared background connection (`"incognito": "spanning"`).
+- Removed the obsolete bridge page and its web-accessible-resource declaration.
+  Chrome-generated `_metadata` ruleset files are ignored in version control;
+  `go-and-fill-rules.json` is the rule source.
 - Manifest version is `4.7.5.91`; the desktop protocol still identifies itself
   as `4.7.5`, matching the original bundle.
 
 ## Browser testing
 
-JavaScript syntax, JSON, manifest fields, and referenced package files were
-checked. Browser behavior and desktop integration have not been tested.
+Run `node --test tests/*.test.cjs` for the mocked service worker regression
+checks. These exercise the legacy bundle and worker but do not run Chrome's
+redirect engine or the real desktop app. Browser testing remains manual.
 
 Check toolbar and context-menu opening, desktop pairing/unlocking, filling and
 saving on a disposable login page, and a legacy Go & Fill bookmark. For the bookmark, check that ordinary query parameters and a URL fragment survive, `onepasswdfill`/`onepasswdvault` are removed, and the intended item fills. Also
 check multiple bookmark tabs and reconnecting after quitting/reopening the
 desktop app or restarting the browser.
+
+For incognito Go & Fill, reload the extension and enable **Allow in incognito**
+in its extension details. Open a bookmark in an incognito window and verify
+that it stays in that window, opens the cleaned destination, and fills the
+intended item. Repeat in a normal window, including bookmarks with additional
+query parameters and fragments. Test with service worker DevTools closed as
+well, so a cold worker can exercise navigation tracking during initialization.
 
 For failures, use the extension's **Errors** button and the **service worker**
 inspection link on the extensions page. Record the error text and the action

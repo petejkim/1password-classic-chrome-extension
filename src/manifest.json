@@ -97,16 +97,5 @@
         "path": "go-and-fill-rules.json"
       }
     ]
-  },
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "go-and-fill.html"
-      ],
-      "matches": [
-        "http://*/*",
-        "https://*/*"
-      ]
-    }
-  ]
+  }
 }

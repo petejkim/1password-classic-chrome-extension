@@ -6,3 +6,5 @@ __MACOSX/
 Icon[]
 ._*
 
+# Chrome regenerates compiled declarative request rules from their JSON source.
+/src/_metadata/

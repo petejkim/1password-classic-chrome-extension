@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "1Password extension (desktop app required)",
+  "name": "1Password Classic (1Password 7 desktop app required)",
   "version": "4.7.5.91",
   "description": "Extends the 1Password app on your Mac or Windows PC, so you can fill and save passwords in your browser.",
   "icons": {
@@ -63,7 +63,7 @@
       ]
     }
   ],
-  "homepage_url": "https://agilebits.com/onepassword",
+  "homepage_url": "https://github.com/petejkim/1password-classic-chrome-extension",
   "incognito": "spanning",
   "key": "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCWQJbxQ31ikdrZbmRSBK8mpMh2s1pOnCjVTNDOE0KCHYZRnLu994edDgGXs36ga0G/jjV5YScNmeX24ds/kZ0b0UP4V+YXv7Lu9IevRTRR/LinUy3s3m3nIuY5rtzD5FQau3dAo9qHgggNI5MrEjNh5cjsSTq021r/yOzmNsoTNQIDAQAB",
   "permissions": [
@@ -75,8 +75,8 @@
     "alarms",
     "declarativeNetRequestWithHostAccess"
   ],
-  "short_name": "1Password",
-  "version_name": "4.7.5.90 (local Manifest V3 migration)",
+  "short_name": "1Password Classic",
+  "version_name": "4.7.5.91",
   "minimum_chrome_version": "120",
   "action": {
     "default_title": "1Password",

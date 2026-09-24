@@ -223,11 +223,14 @@ importScripts("ext/sjcl.js", "global.min.js");
   op.setToolbarButtonEnabled(true);
 
   // The original native transport still handles authentication, encryption,
-  // reconnect delays, and the legacy localhost WebSocket fallback. A one-shot
-  // alarm revives a worker if a disconnected transport's retry timer is lost.
+  // reconnect delays, and the legacy localhost WebSocket fallback. A recurring
+  // alarm revives a worker if retry timers or an idle WebSocket are lost when
+  // it shuts down. Chrome 120 permits a minimum alarm period of 30 seconds.
   globalThis.mv3ScheduleReconnect = function () {
     if (!desktopPaused) {
-      chrome.alarms.create(reconnectAlarm, { delayInMinutes: 1 }).catch(report);
+      chrome.alarms.create(reconnectAlarm, {
+        delayInMinutes: 0.5, periodInMinutes: 0.5
+      }).catch(report);
     }
   };
   Agent.connect = function (force = false) {
@@ -248,6 +251,8 @@ importScripts("ext/sjcl.js", "global.min.js");
       desktopPaused = true;
       chrome.storage.session.set({ [pauseKey]: true }).catch(report);
       chrome.alarms.clear(reconnectAlarm).catch(report);
+      // The legacy WebSocket transport has no pause() method of its own.
+      if (this.c instanceof WebSocketConnection) this.c.disconnect({});
     }
     return pause.call(this, duration);
   };
@@ -274,7 +279,8 @@ importScripts("ext/sjcl.js", "global.min.js");
     }
   }
   Agent.on("ConnectionDidEstablishConnection", () => {
-    chrome.alarms.clear(reconnectAlarm).catch(report);
+    if (Agent.c instanceof WebSocketConnection) globalThis.mv3ScheduleReconnect();
+    else chrome.alarms.clear(reconnectAlarm).catch(report);
     // The bundle marks its port ready after delivering this event.
     queueMicrotask(flushBookmarks);
   });
@@ -373,7 +379,11 @@ importScripts("ext/sjcl.js", "global.min.js");
     if (alarm.name === reconnectAlarm) {
       // A cold worker reconnects in `ready`; a live worker already has the
       // transport's retry timer. Do not open a competing connection here.
-      ready.catch(report);
+      ready.then(() => {
+        if (desktopPaused || globalThis.C?.rejected()) {
+          return chrome.alarms.clear(reconnectAlarm);
+        }
+      }).catch(report);
     }
   });
   chrome.windows.onFocusChanged.addListener(windowId => {

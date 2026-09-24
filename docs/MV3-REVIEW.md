@@ -88,7 +88,16 @@ closed for a cold-start check.
 
 ## 3. [P2] The WebSocket fallback can lose its connection while idle
 
-**Status:** Open; no fix commit in the current history.
+**Status:** Fixed
+
+**Retry timing:** While the worker is running, the WebSocket fallback retries
+automatically after a connection failure unless authorization was rejected.
+The delay increases linearly by two seconds per pass through the candidate
+ports, not exponentially. The maximum scheduled delay has been reduced from
+60 seconds to 30 seconds; attempts within a pass remain 50 milliseconds apart.
+These are scheduled delays, not a guarantee of reconnection within 30 seconds.
+The delay cap alone does not address worker shutdown; alarm recovery is
+implemented separately below.
 
 **Location:** [`src/service-worker.js`](../src/service-worker.js), the
 `ConnectionDidEstablishConnection` listener;
@@ -110,8 +119,35 @@ event wakes the worker. See
 such as a protocol-compatible heartbeat or a reliable reconnect wakeup mechanism.
 Do not assume native messaging's keepalive behavior also applies to WebSockets.
 
+**Implemented correction:** The reconnect alarm now repeats every 30 seconds,
+Chrome 120's minimum supported alarm interval. A successful WebSocket connection
+retains the alarm; a successful native messaging connection clears it. If Chrome
+terminates the worker, the next alarm wakes a fresh worker, which attempts native
+messaging and falls back to the existing WebSocket connection and authentication
+protocol when the native host is unavailable. Live workers keep their existing
+retry timers; alarm events do not start competing connection attempts. No host
+desktop changes, new protocol messages, or new extension permissions are needed.
+
+An indefinite desktop pause clears the alarm and stops the WebSocket transport's
+socket and scheduled retry timer. Alarm handling also clears recovery when
+authorization has been rejected. The persisted pause is respected after restart.
+
+Chrome can delay alarm delivery, including during device sleep. The 30-second
+timer cap therefore does not guarantee recovery within 30 seconds after worker
+shutdown. Desktop actions sent while disconnected may still need to be retried.
+See [Chrome's alarm documentation](https://developer.chrome.com/docs/extensions/reference/api/alarms).
+
+**Automated verification:** `node --test tests/websocket-retry.test.cjs` exercises
+the real legacy fallback with mocked sockets and Chrome APIs. It covers the
+linear retry cap, fallback selection after native-host failure, recurring alarm
+retention, cold-worker recovery, avoiding duplicate connections, native recovery,
+desktop pause, and authorization rejection.
+
 **Manual check:** In a setup where the native host is unavailable and the
 compatible WebSocket fallback connects, close worker DevTools and leave the
-browser idle for more than 30 seconds. Then initiate an action from the desktop
-app and check whether it reaches the extension without first interacting with
-the browser.
+browser idle for several minutes. Verify that an idle disconnect recovers
+without browser interaction, allowing time for alarm delivery and authentication.
+Then initiate an action from the desktop app and verify delivery after recovery.
+Also test closing/reopening the desktop helper, device sleep/wake, and a desktop
+pause or rejected authorization. Do not expect actions sent during a connection
+gap to be replayed automatically.

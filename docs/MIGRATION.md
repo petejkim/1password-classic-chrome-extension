@@ -29,12 +29,20 @@ and desktop authorization still apply.
   native connection attempts, reset disconnected native ports, and removed the
   old Chrome event setup. The original authentication and filling code remains.
 - `service-worker.js`: synchronous Chrome event registration, MV3 context menu,
-  native connection setup, retry wakeup alarm, and minimal session snapshots for
+  native connection setup, recurring retry wakeup alarm, and minimal session snapshots for
   unsent bookmarks bound to committed documents. Snapshots contain item/vault
   IDs, Chrome document ID, creation time, completion state, and a URL fingerprint.
   Full URLs, desktop contexts, password values, and in-flight filling callbacks
   are not persisted. A worker restart reconnects and authenticates the desktop
   transport. Operations already sent to the desktop require a retry after restart.
+- WebSocket fallback recovery: a 30-second recurring alarm survives worker
+  shutdown and wakes a fresh connection attempt without browser interaction.
+  Successful native messaging clears the alarm; successful WebSocket connections
+  retain it. Live-worker retries use linear backoff capped at 30 seconds, while
+  alarm delivery and actual reconnection can take longer. Desktop pause and
+  rejected authorization stop alarm recovery. No desktop protocol changes or
+  additional permissions are required. Actions sent during a connection gap may
+  need to be retried.
 - Go & Fill operations bind to the committed document. Abandoned navigations,
   history/fragment changes, and expired operations are canceled. Pending state
   can resume only when its committed document still matches. Credential messages

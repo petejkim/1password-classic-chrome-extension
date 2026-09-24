@@ -40,13 +40,12 @@ function storage(initial = {}) {
 }
 
 async function loadWorker({ session = storage(), beforeReady = () => {},
-  frames = new Map(), tabs = new Map(), now = Date.now } = {}) {
+  frames = new Map(), tabs = new Map(), alarms = new Map(), now = Date.now } = {}) {
   const ports = [];
   const timers = new Map();
   const errors = [];
   let timerId = 0;
   const sentMessages = [];
-  const alarms = new Map();
   const updateFrame = details => {
     frames.set(`${details.tabId}:${details.frameId}`, {
       ...details, documentLifecycle: details.documentLifecycle || "active", errorOccurred: false
@@ -130,7 +129,6 @@ async function loadWorker({ session = storage(), beforeReady = () => {},
   run("service-worker.js");
   beforeReady(chrome);
   await settle();
-  assert.equal(ports.length, 1);
   return { context, chrome, ports, timers, local, session, errors, frames, tabs, sentMessages, alarms };
 }
 

@@ -396,8 +396,7 @@ importScripts("ext/sjcl.js", "global.min.js");
   chrome.tabs.onUpdated.addListener((tabId, changes, tab) => {
     if (changes.status !== "complete") return;
     ready.then(() => {
-      if (tab.url === "https://agilebits.com/browsers/welcome.html") op.welcomeScreenLoaded(tab);
-      else if (tab.url === "https://agilebits.com/browsers/auth.html" && C) C.ub(tab);
+      if (tab.url === "https://agilebits.com/browsers/auth.html" && C) C.ub(tab);
     }).catch(report);
   });
   chrome.tabs.onRemoved.addListener(tabId => {
